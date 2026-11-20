@@ -1,0 +1,67 @@
+name: Build Swarasync APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+env:
+  UPSTREAM: https://github.com/kushagrasinghx/BitChord
+  UPSTREAM_SHA: acf219a7e4a7f52f026d4336d5c7ac5cf7bfafcc
+  GIT_LFS_SKIP_SMUDGE: "1"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+
+      - name: Check the patch file is here
+        run: |
+          ls -la
+          test -f swarasync-changes.patch || { echo "MISSING: swarasync-changes.patch must be in the top level of the repo"; exit 1; }
+
+      - name: Fetch BitChord and apply the Swarasync patch
+        run: |
+          git init -q src
+          cd src
+          git remote add origin "$UPSTREAM"
+          git fetch -q --depth 1 origin "$UPSTREAM_SHA"
+          git checkout -q FETCH_HEAD
+          git apply --whitespace=nowarn ../swarasync-changes.patch
+          chmod +x gradlew
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Accept Android SDK licenses
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+
+      - name: Build APK (debug)
+        working-directory: src
+        run: ./gradlew assembleProdDebug -Pbitchord.bundleWear=false --stacktrace
+
+      - name: Upload APK (debug)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Swarasync-debug-apk
+          path: src/app/build/outputs/apk/prod/debug/*.apk
+          if-no-files-found: error
+
+      - name: Build APK (optimised)
+        id: optimised
+        working-directory: src
+        continue-on-error: true
+        run: ./gradlew assembleProdBenchmark -Pbitchord.bundleWear=false --stacktrace
+
+      - name: Upload APK (optimised)
+        if: steps.optimised.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Swarasync-optimised-apk
+          path: src/app/build/outputs/apk/prod/benchmark/*.apk
