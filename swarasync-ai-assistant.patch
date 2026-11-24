@@ -1,0 +1,817 @@
+diff --git a/app/src/main/AndroidManifest.xml b/app/src/main/AndroidManifest.xml
+index de96189..82bffa3 100644
+--- a/app/src/main/AndroidManifest.xml
++++ b/app/src/main/AndroidManifest.xml
+@@ -771,6 +771,13 @@
+         <meta-data
+             android:name="com.google.android.gms.cast.framework.OPTIONS_PROVIDER_CLASS_NAME"
+             android:value="com.music.bitchord.playback.cast.CastOptionsProvider" />
++
++        <!-- The AI assistant: chat, recommendations and player control. -->
++        <activity
++            android:name=".assistant.AssistantActivity"
++            android:exported="false"
++            android:windowSoftInputMode="adjustResize"
++            android:theme="@style/Theme.BitChord" />
+     </application>
+ 
+ </manifest>
+diff --git a/app/src/main/java/com/music/bitchord/assistant/AssistantActivity.kt b/app/src/main/java/com/music/bitchord/assistant/AssistantActivity.kt
+new file mode 100644
+index 0000000..194aba6
+--- /dev/null
++++ b/app/src/main/java/com/music/bitchord/assistant/AssistantActivity.kt
+@@ -0,0 +1,326 @@
++package com.music.bitchord.assistant
++
++import android.content.ActivityNotFoundException
++import android.content.Intent
++import android.os.Bundle
++import android.speech.RecognizerIntent
++import android.widget.Toast
++import androidx.activity.compose.rememberLauncherForActivityResult
++import androidx.activity.compose.setContent
++import androidx.activity.enableEdgeToEdge
++import androidx.activity.result.contract.ActivityResultContracts
++import androidx.appcompat.app.AppCompatActivity
++import androidx.compose.foundation.background
++import androidx.compose.foundation.clickable
++import androidx.compose.foundation.isSystemInDarkTheme
++import androidx.compose.foundation.layout.Arrangement
++import androidx.compose.foundation.layout.Box
++import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.Row
++import androidx.compose.foundation.layout.fillMaxSize
++import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.foundation.layout.imePadding
++import androidx.compose.foundation.layout.padding
++import androidx.compose.foundation.layout.size
++import androidx.compose.foundation.layout.systemBarsPadding
++import androidx.compose.foundation.lazy.LazyColumn
++import androidx.compose.foundation.lazy.rememberLazyListState
++import androidx.compose.foundation.shape.RoundedCornerShape
++import androidx.compose.foundation.text.KeyboardActions
++import androidx.compose.foundation.text.KeyboardOptions
++import androidx.compose.material.icons.Icons
++import androidx.compose.material.icons.automirrored.rounded.Send
++import androidx.compose.material.icons.rounded.Add
++import androidx.compose.material.icons.rounded.Close
++import androidx.compose.material.icons.rounded.Mic
++import androidx.compose.material.icons.rounded.Settings
++import androidx.compose.material3.Button
++import androidx.compose.material3.CircularProgressIndicator
++import androidx.compose.material3.Icon
++import androidx.compose.material3.IconButton
++import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.OutlinedTextField
++import androidx.compose.material3.Surface
++import androidx.compose.material3.Text
++import androidx.compose.material3.TextButton
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.LaunchedEffect
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.rememberCoroutineScope
++import androidx.compose.runtime.setValue
++import androidx.compose.ui.Alignment
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.draw.clip
++import androidx.compose.ui.layout.ContentScale
++import androidx.compose.ui.platform.LocalContext
++import androidx.compose.ui.text.input.ImeAction
++import androidx.compose.ui.text.input.PasswordVisualTransformation
++import androidx.compose.ui.text.style.TextOverflow
++import androidx.compose.ui.unit.dp
++import androidx.lifecycle.compose.collectAsStateWithLifecycle
++import androidx.lifecycle.viewmodel.compose.viewModel
++import coil3.compose.AsyncImage
++import com.music.bitchord.data.model.Song
++import com.music.bitchord.data.settings.AppSettings
++import com.music.bitchord.data.settings.ThemeMode
++import com.music.bitchord.playback.playSongs
++import com.music.bitchord.playback.rememberMediaController
++import com.music.bitchord.ui.theme.BitChordTheme
++import kotlinx.coroutines.launch
++
++/** The Swarasync AI assistant: chat, recommendations and hands-free player control. */
++class AssistantActivity : AppCompatActivity() {
++    override fun onCreate(savedInstanceState: Bundle?) {
++        super.onCreate(savedInstanceState)
++        enableEdgeToEdge()
++        setContent {
++            val theme by AppSettings.themeMode.collectAsStateWithLifecycle()
++            val appFont by AppSettings.appFont.collectAsStateWithLifecycle()
++            val dark = when (theme) {
++                ThemeMode.SYSTEM -> isSystemInDarkTheme()
++                ThemeMode.LIGHT -> false
++                ThemeMode.DARK -> true
++            }
++            BitChordTheme(darkTheme = dark, font = appFont) {
++                AssistantScreen(onClose = { finish() })
++            }
++        }
++    }
++}
++
++private val SUGGESTIONS = listOf(
++    "Play something upbeat",
++    "Make a rainy-day playlist",
++    "Recommend songs like Kesariya",
++    "Sleep timer for 30 minutes",
++)
++
++@Composable
++private fun AssistantScreen(onClose: () -> Unit) {
++    val context = LocalContext.current
++    val vm: AssistantViewModel = viewModel()
++    val controller = rememberMediaController()
++    val scope = rememberCoroutineScope()
++    val listState = rememberLazyListState()
++
++    var savedKey by remember { mutableStateOf(AssistantStore.apiKey(context)) }
++    var showSetup by remember { mutableStateOf(savedKey.isBlank()) }
++    var input by remember { mutableStateOf("") }
++
++    val speech = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
++        val heard = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()
++        if (!heard.isNullOrBlank()) vm.send(heard, controller)
++    }
++
++    LaunchedEffect(vm.items.size, vm.busy) {
++        if (vm.items.isNotEmpty()) listState.animateScrollToItem(vm.items.size)
++    }
++
++    Column(
++        Modifier
++            .fillMaxSize()
++            .background(MaterialTheme.colorScheme.background)
++            .systemBarsPadding()
++            .imePadding(),
++    ) {
++        Row(
++            Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
++            verticalAlignment = Alignment.CenterVertically,
++        ) {
++            IconButton(onClick = onClose) { Icon(Icons.Rounded.Close, contentDescription = "Close") }
++            Text(
++                "AI Assistant",
++                style = MaterialTheme.typography.titleLarge,
++                modifier = Modifier.weight(1f),
++            )
++            IconButton(onClick = { vm.clear() }) { Icon(Icons.Rounded.Add, contentDescription = "New chat") }
++            IconButton(onClick = { showSetup = !showSetup }) {
++                Icon(Icons.Rounded.Settings, contentDescription = "Assistant settings")
++            }
++        }
++
++        if (showSetup) {
++            SetupPanel(
++                hasKey = savedKey.isNotBlank(),
++                onSaved = {
++                    savedKey = AssistantStore.apiKey(context)
++                    showSetup = savedKey.isBlank()
++                },
++            )
++        }
++
++        LazyColumn(
++            state = listState,
++            modifier = Modifier.weight(1f).fillMaxWidth(),
++            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 8.dp),
++            verticalArrangement = Arrangement.spacedBy(10.dp),
++        ) {
++            if (vm.items.isEmpty() && !showSetup) {
++                item {
++                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
++                        Text(
++                            "Ask me to play music, build a playlist, or find something new.",
++                            color = MaterialTheme.colorScheme.onSurfaceVariant,
++                        )
++                        SUGGESTIONS.forEach { s ->
++                            Surface(
++                                shape = RoundedCornerShape(16.dp),
++                                color = MaterialTheme.colorScheme.surfaceVariant,
++                                modifier = Modifier.fillMaxWidth().clickable { vm.send(s, controller) },
++                            ) { Text(s, Modifier.padding(14.dp)) }
++                        }
++                    }
++                }
++            }
++            items(vm.items.size) { index ->
++                val item = vm.items[index]
++                Column(
++                    Modifier.fillMaxWidth(),
++                    horizontalAlignment = if (item.fromUser) Alignment.End else Alignment.Start,
++                    verticalArrangement = Arrangement.spacedBy(6.dp),
++                ) {
++                    Surface(
++                        shape = RoundedCornerShape(18.dp),
++                        color = when {
++                            item.isError -> MaterialTheme.colorScheme.errorContainer
++                            item.fromUser -> MaterialTheme.colorScheme.primary
++                            else -> MaterialTheme.colorScheme.surfaceVariant
++                        },
++                        contentColor = when {
++                            item.isError -> MaterialTheme.colorScheme.onErrorContainer
++                            item.fromUser -> MaterialTheme.colorScheme.onPrimary
++                            else -> MaterialTheme.colorScheme.onSurface
++                        },
++                    ) { Text(item.text, Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) }
++                    item.songs.forEach { song ->
++                        SongRow(song) {
++                            scope.launch { controller?.playSongs(listOf(song), 0) }
++                        }
++                    }
++                }
++            }
++            if (vm.busy) {
++                item { CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp) }
++            }
++        }
++
++        Row(
++            Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
++            verticalAlignment = Alignment.CenterVertically,
++        ) {
++            OutlinedTextField(
++                value = input,
++                onValueChange = { input = it },
++                modifier = Modifier.weight(1f),
++                placeholder = { Text("Ask or tell me what to play") },
++                shape = RoundedCornerShape(24.dp),
++                maxLines = 4,
++                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
++                keyboardActions = KeyboardActions(onSend = {
++                    vm.send(input, controller)
++                    input = ""
++                }),
++            )
++            IconButton(onClick = {
++                try {
++                    speech.launch(
++                        Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
++                            .putExtra(
++                                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
++                                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM,
++                            ),
++                    )
++                } catch (_: ActivityNotFoundException) {
++                    Toast.makeText(context, "Voice input isn't available on this device", Toast.LENGTH_SHORT).show()
++                }
++            }) { Icon(Icons.Rounded.Mic, contentDescription = "Speak") }
++            IconButton(
++                enabled = input.isNotBlank() && !vm.busy,
++                onClick = {
++                    vm.send(input, controller)
++                    input = ""
++                },
++            ) { Icon(Icons.AutoMirrored.Rounded.Send, contentDescription = "Send") }
++        }
++    }
++}
++
++@Composable
++private fun SetupPanel(hasKey: Boolean, onSaved: () -> Unit) {
++    val context = LocalContext.current
++    var key by remember { mutableStateOf("") }
++    var model by remember { mutableStateOf(AssistantStore.model(context)) }
++    Column(
++        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
++        verticalArrangement = Arrangement.spacedBy(8.dp),
++    ) {
++        Text("Connect your Anthropic account", style = MaterialTheme.typography.titleMedium)
++        Text(
++            "Paste an API key from console.anthropic.com. It is stored only on this device, " +
++                "and usage is billed to your Anthropic account.",
++            color = MaterialTheme.colorScheme.onSurfaceVariant,
++            style = MaterialTheme.typography.bodySmall,
++        )
++        OutlinedTextField(
++            value = key,
++            onValueChange = { key = it },
++            modifier = Modifier.fillMaxWidth(),
++            label = { Text(if (hasKey) "New API key (leave empty to keep)" else "API key") },
++            singleLine = true,
++            visualTransformation = PasswordVisualTransformation(),
++        )
++        OutlinedTextField(
++            value = model,
++            onValueChange = { model = it },
++            modifier = Modifier.fillMaxWidth(),
++            label = { Text("Model") },
++            singleLine = true,
++        )
++        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
++            Button(onClick = {
++                if (key.isNotBlank()) AssistantStore.setApiKey(context, key)
++                AssistantStore.setModel(context, model)
++                key = ""
++                onSaved()
++            }) { Text("Save") }
++            if (hasKey) {
++                TextButton(onClick = {
++                    AssistantStore.setApiKey(context, "")
++                    onSaved()
++                }) { Text("Remove key") }
++            }
++        }
++    }
++}
++
++@Composable
++private fun SongRow(song: Song, onPlay: () -> Unit) {
++    Surface(
++        shape = RoundedCornerShape(14.dp),
++        color = MaterialTheme.colorScheme.surface,
++        modifier = Modifier.fillMaxWidth(0.92f).clickable(onClick = onPlay),
++    ) {
++        Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
++            Box(Modifier.size(44.dp).clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant)) {
++                AsyncImage(
++                    model = song.thumbnailUrl,
++                    contentDescription = null,
++                    contentScale = ContentScale.Crop,
++                    modifier = Modifier.fillMaxSize(),
++                )
++            }
++            Column(Modifier.padding(start = 10.dp)) {
++                Text(song.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
++                Text(
++                    song.artist,
++                    maxLines = 1,
++                    overflow = TextOverflow.Ellipsis,
++                    color = MaterialTheme.colorScheme.onSurfaceVariant,
++                    style = MaterialTheme.typography.bodySmall,
++                )
++            }
++        }
++    }
++}
+diff --git a/app/src/main/java/com/music/bitchord/assistant/AssistantClient.kt b/app/src/main/java/com/music/bitchord/assistant/AssistantClient.kt
+new file mode 100644
+index 0000000..19c5b75
+--- /dev/null
++++ b/app/src/main/java/com/music/bitchord/assistant/AssistantClient.kt
+@@ -0,0 +1,72 @@
++package com.music.bitchord.assistant
++
++import java.net.HttpURLConnection
++import java.net.URL
++import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.withContext
++import kotlinx.serialization.json.Json
++import kotlinx.serialization.json.JsonArray
++import kotlinx.serialization.json.JsonObject
++import kotlinx.serialization.json.buildJsonObject
++import kotlinx.serialization.json.jsonObject
++import kotlinx.serialization.json.jsonPrimitive
++import kotlinx.serialization.json.put
++
++internal class AssistantException(message: String) : Exception(message)
++
++/** A minimal client for the Anthropic Messages API, with no extra dependencies. */
++internal object AssistantClient {
++    private const val ENDPOINT = "https://api.anthropic.com/v1/messages"
++    private val json = Json { ignoreUnknownKeys = true }
++
++    suspend fun complete(
++        apiKey: String,
++        model: String,
++        system: String,
++        messages: List<JsonObject>,
++        tools: JsonArray,
++    ): Result<JsonObject> = withContext(Dispatchers.IO) {
++        runCatching {
++            val body = buildJsonObject {
++                put("model", model)
++                put("max_tokens", 1024)
++                put("system", system)
++                put("tools", tools)
++                put("messages", JsonArray(messages))
++            }.toString()
++            val conn = (URL(ENDPOINT).openConnection() as HttpURLConnection).apply {
++                requestMethod = "POST"
++                connectTimeout = 15_000
++                readTimeout = 60_000
++                doOutput = true
++                setRequestProperty("content-type", "application/json")
++                setRequestProperty("x-api-key", apiKey)
++                setRequestProperty("anthropic-version", "2023-06-01")
++            }
++            try {
++                conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
++                val code = conn.responseCode
++                val stream = if (code in 200..299) conn.inputStream else conn.errorStream
++                val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
++                if (code !in 200..299) throw AssistantException(describe(code, text))
++                json.parseToJsonElement(text).jsonObject
++            } finally {
++                conn.disconnect()
++            }
++        }
++    }
++
++    private fun describe(code: Int, body: String): String {
++        val detail = runCatching {
++            json.parseToJsonElement(body).jsonObject["error"]?.jsonObject
++                ?.get("message")?.jsonPrimitive?.content
++        }.getOrNull()
++        return when (code) {
++            401 -> "That API key was rejected. Check it in the assistant settings."
++            403 -> "This key isn't allowed to use that model."
++            404 -> "That model name wasn't found. Check the model in the assistant settings."
++            429 -> "Rate limit or credit limit reached. Try again in a moment."
++            else -> detail ?: "The AI service returned an error ($code)."
++        }
++    }
++}
+diff --git a/app/src/main/java/com/music/bitchord/assistant/AssistantStore.kt b/app/src/main/java/com/music/bitchord/assistant/AssistantStore.kt
+new file mode 100644
+index 0000000..d892878
+--- /dev/null
++++ b/app/src/main/java/com/music/bitchord/assistant/AssistantStore.kt
+@@ -0,0 +1,32 @@
++package com.music.bitchord.assistant
++
++import android.content.Context
++import com.music.bitchord.auth.EncryptedPrefs
++
++/**
++ * Where the assistant keeps the user's own Anthropic API key.
++ *
++ * The key is typed in by the user and stored on this device only, in the same
++ * encrypted store the app uses for its account credentials. Nothing is bundled
++ * in the APK, because a key shipped inside an app can be extracted by anyone.
++ */
++internal object AssistantStore {
++    const val DEFAULT_MODEL = "claude-sonnet-5-5"
++
++    private fun prefs(context: Context) =
++        EncryptedPrefs.open(context, "swarasync_ai_enc", "swarasync_ai_plain")
++
++    fun apiKey(context: Context): String =
++        prefs(context).getString("api_key", "").orEmpty()
++
++    fun setApiKey(context: Context, key: String) {
++        prefs(context).edit().putString("api_key", key.trim()).apply()
++    }
++
++    fun model(context: Context): String =
++        prefs(context).getString("model", DEFAULT_MODEL).orEmpty().ifBlank { DEFAULT_MODEL }
++
++    fun setModel(context: Context, model: String) {
++        prefs(context).edit().putString("model", model.trim()).apply()
++    }
++}
+diff --git a/app/src/main/java/com/music/bitchord/assistant/AssistantViewModel.kt b/app/src/main/java/com/music/bitchord/assistant/AssistantViewModel.kt
+new file mode 100644
+index 0000000..0168526
+--- /dev/null
++++ b/app/src/main/java/com/music/bitchord/assistant/AssistantViewModel.kt
+@@ -0,0 +1,322 @@
++package com.music.bitchord.assistant
++
++import android.app.Application
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateListOf
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.setValue
++import androidx.lifecycle.AndroidViewModel
++import androidx.lifecycle.viewModelScope
++import androidx.media3.session.MediaController
++import com.music.bitchord.data.YtMusicRepository
++import com.music.bitchord.data.model.QueueTier
++import com.music.bitchord.data.model.SearchFilter
++import com.music.bitchord.data.model.SearchResult
++import com.music.bitchord.data.model.Song
++import com.music.bitchord.playback.QueueCoordinator
++import com.music.bitchord.playback.QueueCoordinator.asQueueEntry
++import com.music.bitchord.playback.SleepTimer
++import com.music.bitchord.playback.playSongs
++import com.music.bitchord.playback.toMediaItem
++import com.music.bitchord.playback.toSong
++import kotlinx.coroutines.CancellationException
++import kotlinx.coroutines.Job
++import kotlinx.coroutines.async
++import kotlinx.coroutines.awaitAll
++import kotlinx.coroutines.coroutineScope
++import kotlinx.coroutines.launch
++import kotlinx.coroutines.withTimeoutOrNull
++import kotlinx.serialization.json.JsonArray
++import kotlinx.serialization.json.JsonObject
++import kotlinx.serialization.json.JsonObjectBuilder
++import kotlinx.serialization.json.JsonPrimitive
++import kotlinx.serialization.json.add
++import kotlinx.serialization.json.buildJsonArray
++import kotlinx.serialization.json.buildJsonObject
++import kotlinx.serialization.json.contentOrNull
++import kotlinx.serialization.json.intOrNull
++import kotlinx.serialization.json.jsonArray
++import kotlinx.serialization.json.jsonObject
++import kotlinx.serialization.json.jsonPrimitive
++import kotlinx.serialization.json.put
++import kotlinx.serialization.json.putJsonArray
++import kotlinx.serialization.json.putJsonObject
++
++/** Chat state for the assistant, and the tools it can use to drive the player. */
++class AssistantViewModel(app: Application) : AndroidViewModel(app) {
++
++    data class Item(
++        val fromUser: Boolean,
++        val text: String,
++        val songs: List<Song> = emptyList(),
++        val isError: Boolean = false,
++    )
++
++    val items = mutableStateListOf<Item>()
++    var busy by mutableStateOf(false)
++        private set
++
++    private val history = mutableListOf<JsonObject>()
++    private var job: Job? = null
++
++    fun clear() {
++        job?.cancel()
++        history.clear()
++        items.clear()
++        busy = false
++    }
++
++    fun send(text: String, controller: MediaController?) {
++        val prompt = text.trim()
++        if (prompt.isEmpty() || busy) return
++        val context = getApplication<Application>()
++        val key = AssistantStore.apiKey(context)
++        if (key.isBlank()) {
++            items += Item(false, "Add your API key first (tap the gear).", isError = true)
++            return
++        }
++        items += Item(true, prompt)
++        history += buildJsonObject {
++            put("role", "user")
++            put("content", prompt)
++        }
++        trimHistory()
++        busy = true
++        job = viewModelScope.launch {
++            try {
++                converse(key, AssistantStore.model(context), controller)
++            } catch (e: CancellationException) {
++                throw e
++            } catch (e: Exception) {
++                items += Item(false, e.message ?: "Something went wrong.", isError = true)
++            } finally {
++                busy = false
++            }
++        }
++    }
++
++    /** Keeps the request small, never cutting between a tool call and its result. */
++    private fun trimHistory() {
++        while (history.size > 40) {
++            val next = (1 until history.size).firstOrNull { i ->
++                val m = history[i]
++                m["role"]?.jsonPrimitive?.contentOrNull == "user" && m["content"] is JsonPrimitive
++            } ?: break
++            repeat(next) { history.removeAt(0) }
++        }
++    }
++
++    private suspend fun converse(key: String, model: String, controller: MediaController?) {
++        val shown = mutableListOf<Song>()
++        var finalText = ""
++        repeat(6) {
++            val response = AssistantClient.complete(key, model, SYSTEM_PROMPT, history, TOOLS).getOrThrow()
++            val content = response["content"]?.jsonArray ?: JsonArray(emptyList())
++            history += buildJsonObject {
++                put("role", "assistant")
++                put("content", content)
++            }
++            val texts = content.map { it.jsonObject }
++                .filter { it["type"]?.jsonPrimitive?.contentOrNull == "text" }
++                .mapNotNull { it["text"]?.jsonPrimitive?.contentOrNull }
++            if (texts.isNotEmpty()) finalText = texts.joinToString("\n").trim()
++            val calls = content.map { it.jsonObject }
++                .filter { it["type"]?.jsonPrimitive?.contentOrNull == "tool_use" }
++            if (calls.isEmpty() || response["stop_reason"]?.jsonPrimitive?.contentOrNull != "tool_use") {
++                items += Item(false, finalText.ifBlank { "Done." }, shown.distinctBy { it.videoId })
++                return
++            }
++            val results = buildJsonArray {
++                for (call in calls) {
++                    val name = call["name"]?.jsonPrimitive?.contentOrNull.orEmpty()
++                    val args = call["input"] as? JsonObject ?: JsonObject(emptyMap())
++                    val output = try {
++                        runTool(name, args, controller, shown)
++                    } catch (e: CancellationException) {
++                        throw e
++                    } catch (e: Exception) {
++                        "Error: ${e.message}"
++                    }
++                    add(buildJsonObject {
++                        put("type", "tool_result")
++                        put("tool_use_id", call["id"]?.jsonPrimitive?.contentOrNull.orEmpty())
++                        put("content", output)
++                    })
++                }
++            }
++            history += buildJsonObject {
++                put("role", "user")
++                put("content", results)
++            }
++        }
++        items += Item(false, finalText.ifBlank { "Done." }, shown.distinctBy { it.videoId })
++    }
++
++    // ---- tools ----
++
++    private suspend fun findSong(query: String): Song? = try {
++        withTimeoutOrNull(8_000L) {
++            YtMusicRepository.search(query.trim().take(120), SearchFilter.ALL).getOrNull()
++        }?.firstNotNullOfOrNull {
++            when (it) {
++                is SearchResult.TopTrack -> it.song
++                is SearchResult.Track -> it.song
++                else -> null
++            }
++        }
++    } catch (e: CancellationException) {
++        throw e
++    } catch (_: Exception) {
++        null
++    }
++
++    private suspend fun findAll(queries: List<String>): List<Song> = coroutineScope {
++        queries.take(15).map { async { findSong(it) } }.awaitAll()
++    }.filterNotNull().distinctBy { it.videoId }
++
++    private fun label(song: Song) = "${song.title} by ${song.artist}"
++
++    private suspend fun runTool(
++        name: String,
++        args: JsonObject,
++        controller: MediaController?,
++        shown: MutableList<Song>,
++    ): String {
++        fun str(key: String) = args[key]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
++        fun list(key: String) = args[key]?.jsonArray
++            ?.mapNotNull { it.jsonPrimitive.contentOrNull?.trim()?.takeIf(String::isNotEmpty) }
++            .orEmpty()
++
++        if (name == "recommend_songs") {
++            val songs = findAll(list("songs"))
++            shown += songs
++            return if (songs.isEmpty()) "No matches found." else
++                "Shown to the user: " + songs.joinToString("; ") { label(it) }
++        }
++        val c = controller ?: return "The player isn't ready yet. Ask the user to try again in a moment."
++        return when (name) {
++            "play_song" -> {
++                val song = findSong(str("query")) ?: return "No match found for that search."
++                c.playSongs(listOf(song), 0)
++                shown += song
++                "Now playing ${label(song)}."
++            }
++            "play_playlist" -> {
++                val songs = findAll(list("songs"))
++                if (songs.isEmpty()) return "None of those songs could be found."
++                c.playSongs(songs, 0)
++                shown += songs
++                "Started a queue of ${songs.size} songs: " + songs.joinToString("; ") { label(it) }
++            }
++            "add_to_queue" -> {
++                val song = findSong(str("query")) ?: return "No match found for that search."
++                val next = args["play_next"]?.jsonPrimitive?.contentOrNull == "true"
++                if (c.mediaItemCount == 0) {
++                    c.playSongs(listOf(song), 0)
++                    return "Nothing was playing, so started ${label(song)}."
++                }
++                val timeline = (0 until c.mediaItemCount).map { c.getMediaItemAt(it).toSong() }
++                val at = QueueCoordinator.findUserQueueInsertionIndex(
++                    timeline = timeline,
++                    currentIndex = c.currentMediaItemIndex,
++                    isNext = next,
++                )
++                c.addMediaItem(at, song.asQueueEntry(QueueTier.USER_QUEUE).toMediaItem())
++                shown += song
++                if (next) "${label(song)} will play next." else "Added ${label(song)} to the queue."
++            }
++            "player_control" -> when (str("action")) {
++                "pause" -> { c.pause(); "Paused." }
++                "resume" -> { c.play(); "Resumed." }
++                "next" -> { c.seekToNextMediaItem(); "Skipped to the next song." }
++                "previous" -> { c.seekToPreviousMediaItem(); "Went back to the previous song." }
++                else -> "Unknown action."
++            }
++            "set_sleep_timer" -> {
++                val minutes = args["minutes"]?.jsonPrimitive?.intOrNull ?: 0
++                if (minutes <= 0) {
++                    SleepTimer.cancel()
++                    "Sleep timer cancelled."
++                } else {
++                    SleepTimer.start(minutes.coerceAtMost(720))
++                    "Sleep timer set for ${minutes.coerceAtMost(720)} minutes."
++                }
++            }
++            "get_now_playing" -> {
++                val song = c.currentMediaItem?.toSong()
++                if (song == null) "Nothing is playing." else
++                    "${label(song)} (${if (c.isPlaying) "playing" else "paused"}), " +
++                        "${c.mediaItemCount} items in the queue."
++            }
++            else -> "Unknown tool."
++        }
++    }
++
++    companion object {
++        private const val SYSTEM_PROMPT =
++            "You are the built-in AI music assistant of Swarasync, an Android music app. " +
++                "Act with your tools instead of describing what you would do: to play, queue, skip or " +
++                "pause, call the matching tool. For recommendations, call recommend_songs with " +
++                "'Title Artist' strings. For a playlist or mood mix the user wants to hear, call " +
++                "play_playlist with 8 to 15 'Title Artist' strings. Replies are read on a phone, so " +
++                "keep them short and friendly. When asked about a song's meaning, explain themes and " +
++                "background in your own words; never quote lyrics. If you are unsure of a fact, say so."
++
++        private fun JsonObjectBuilder.stringProp(name: String, description: String) =
++            putJsonObject(name) {
++                put("type", "string")
++                put("description", description)
++            }
++
++        private fun JsonObjectBuilder.stringListProp(name: String, description: String) =
++            putJsonObject(name) {
++                put("type", "array")
++                put("description", description)
++                putJsonObject("items") { put("type", "string") }
++            }
++
++        private fun tool(
++            name: String,
++            description: String,
++            required: List<String> = emptyList(),
++            props: JsonObjectBuilder.() -> Unit = {},
++        ) = buildJsonObject {
++            put("name", name)
++            put("description", description)
++            putJsonObject("input_schema") {
++                put("type", "object")
++                putJsonObject("properties", props)
++                putJsonArray("required") { required.forEach { add(it) } }
++            }
++        }
++
++        private val TOOLS: JsonArray = buildJsonArray {
++            add(tool("play_song", "Search for one song and play it now.", listOf("query")) {
++                stringProp("query", "Song title and artist, e.g. 'Tum Hi Ho Arijit Singh'")
++            })
++            add(tool("play_playlist", "Start playing a list of songs as a new queue.", listOf("songs")) {
++                stringListProp("songs", "Up to 15 entries, each 'Title Artist'")
++            })
++            add(tool("add_to_queue", "Add one song to the queue, or play it next.", listOf("query")) {
++                stringProp("query", "Song title and artist")
++                putJsonObject("play_next") {
++                    put("type", "boolean")
++                    put("description", "True to play right after the current song")
++                }
++            })
++            add(tool("recommend_songs", "Show tappable song suggestions to the user without playing them.", listOf("songs")) {
++                stringListProp("songs", "Up to 10 entries, each 'Title Artist'")
++            })
++            add(tool("player_control", "Pause, resume, skip or go back.", listOf("action")) {
++                putJsonObject("action") {
++                    put("type", "string")
++                    putJsonArray("enum") { listOf("pause", "resume", "next", "previous").forEach { add(it) } }
++                }
++            })
++            add(tool("set_sleep_timer", "Pause playback after some minutes. Use 0 to cancel.", listOf("minutes")) {
++                putJsonObject("minutes") { put("type", "integer") }
++            })
++            add(tool("get_now_playing", "Get the current song and queue size."))
++        }
++    }
++}
+diff --git a/app/src/main/java/com/music/bitchord/ui/screens/SettingsSheet.kt b/app/src/main/java/com/music/bitchord/ui/screens/SettingsSheet.kt
+index ce039b7..3e16d1a 100644
+--- a/app/src/main/java/com/music/bitchord/ui/screens/SettingsSheet.kt
++++ b/app/src/main/java/com/music/bitchord/ui/screens/SettingsSheet.kt
+@@ -3200,6 +3200,18 @@ private fun SettingsCategoryList(onOpen: (SettingsCategory) -> Unit) {
+                 onClick = { onOpen(category) },
+             )
+         }
++        // The AI assistant has a screen of its own rather than a settings page.
++        RowDivider()
++        val assistantContext = LocalContext.current
++        SettingsRow(
++            icon = SfIcons.AutoAwesome,
++            title = "AI Assistant",
++            onClick = {
++                assistantContext.startActivity(
++                    Intent(assistantContext, com.music.bitchord.assistant.AssistantActivity::class.java),
++                )
++            },
++        )
+     }
+ }
+ 
