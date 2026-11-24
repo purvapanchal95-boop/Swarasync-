@@ -22,6 +22,7 @@ jobs:
         run: |
           ls -la
           test -f swarasync-changes.patch || { echo "MISSING: swarasync-changes.patch must be in the top level of the repo"; exit 1; }
+          test -f swarasync-ai-assistant.patch || { echo "MISSING: swarasync-ai-assistant.patch must be in the top level of the repo"; exit 1; }
 
       - name: Fetch BitChord and apply the Swarasync patch
         run: |
@@ -31,6 +32,7 @@ jobs:
           git fetch -q --depth 1 origin "$UPSTREAM_SHA"
           git checkout -q FETCH_HEAD
           git apply --whitespace=nowarn ../swarasync-changes.patch
+          git apply --whitespace=nowarn ../swarasync-ai-assistant.patch
           chmod +x gradlew
 
       - name: Set up JDK 17
